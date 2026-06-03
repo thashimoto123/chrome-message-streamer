@@ -122,6 +122,7 @@
     textRect: "com.creasty.message-streamer/text-rect",
     overlayBackgroundScope:
       "com.creasty.message-streamer/overlay-background-scope",
+    presets: "com.creasty.message-streamer/presets",
   };
 
   const OverlayBackgroundScope = {
@@ -187,6 +188,14 @@
     #pipeline = null;
     #pipelineKey = null;
     #inputEl = null;
+
+    // Reflect a message into the controller input and the rendered overlay.
+    #setMessage(value) {
+      this.text = value;
+      if (this.#inputEl) {
+        this.#inputEl.value = value;
+      }
+    }
 
     async getModifiedUserMedia(constraints) {
       if (!constraints?.video) {
@@ -466,24 +475,14 @@
       container.style.left = "0";
       container.style.zIndex = 10000;
       container.style.display = "flex";
-      container.style.alignItems = "flex-start";
+      container.style.flexDirection = "column";
       container.style.gap = "4px";
 
-      container.append(this.#createMessageInput());
-
-      const select = document.createElement("select");
-      select.addEventListener("change", (e) => {
-        this.mode = e.currentTarget.value;
-      });
-      container.append(select);
-
-      for (const [label, value] of Object.entries(MessageMode)) {
-        const option = document.createElement("option");
-        option.value = value;
-        option.innerText = label;
-        option.selected = this.mode === value;
-        select.append(option);
-      }
+      const row = document.createElement("div");
+      row.style.display = "flex";
+      row.style.alignItems = "flex-start";
+      row.style.gap = "4px";
+      container.append(row);
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -494,7 +493,18 @@
           window.location.reload();
         }
       });
-      container.append(checkbox);
+
+      const select = document.createElement("select");
+      select.addEventListener("change", (e) => {
+        this.mode = e.currentTarget.value;
+      });
+      for (const [label, value] of Object.entries(MessageMode)) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.innerText = label;
+        option.selected = this.mode === value;
+        select.append(option);
+      }
 
       const advancedPanel = document.createElement("div");
       advancedPanel.style.display = "none";
@@ -513,11 +523,154 @@
         advancedPanel.style.display = hidden ? "flex" : "none";
         toggleButton.textContent = hidden ? "Close" : "Advanced";
       });
-      container.append(toggleButton);
+
+      // Layout order: enabled checkbox, message input, presets, mode, advanced
+      row.append(checkbox);
+      row.append(this.#createMessageInput());
+      row.append(this.#createPresetMenu());
+      row.append(select);
+      row.append(toggleButton);
 
       container.append(advancedPanel);
 
       return container;
+    }
+
+    #createPresetMenu() {
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+      wrapper.style.flex = "0 0 auto";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Presets ▾";
+      button.title = "Saved messages";
+      button.style.cursor = "pointer";
+      button.style.fontSize = "12px";
+      wrapper.append(button);
+
+      const menu = document.createElement("div");
+      menu.style.position = "absolute";
+      menu.style.top = "100%";
+      menu.style.left = "0";
+      menu.style.minWidth = "220px";
+      menu.style.maxHeight = "300px";
+      menu.style.overflowY = "auto";
+      menu.style.background = "#fff";
+      menu.style.color = "#000";
+      menu.style.border = "1px solid #888";
+      menu.style.fontSize = "12px";
+      menu.style.zIndex = "10001";
+      menu.style.display = "none";
+      wrapper.append(menu);
+
+      const renderMenu = () => {
+        menu.replaceChildren();
+        menu.append(this.#createSavePresetItem(renderMenu));
+
+        const presets = this.presets;
+        if (presets.length === 0) {
+          const empty = document.createElement("div");
+          empty.textContent = "No saved messages";
+          empty.style.padding = "4px 8px";
+          empty.style.color = "#888";
+          menu.append(empty);
+        } else {
+          for (let i = 0; i < presets.length; i++) {
+            menu.append(this.#createPresetMenuItem(presets[i], i, renderMenu));
+          }
+        }
+      };
+
+      const closeMenu = () => {
+        menu.style.display = "none";
+        document.removeEventListener("click", onOutsideClick, true);
+      };
+      const onOutsideClick = (e) => {
+        if (!wrapper.contains(e.target)) closeMenu();
+      };
+      button.addEventListener("click", () => {
+        const isOpen = menu.style.display !== "none";
+        if (isOpen) {
+          closeMenu();
+        } else {
+          renderMenu();
+          menu.style.display = "block";
+          document.addEventListener("click", onOutsideClick, true);
+        }
+      });
+
+      return wrapper;
+    }
+
+    #createSavePresetItem(refresh) {
+      const item = document.createElement("div");
+      item.textContent = "+ Save current message";
+      item.style.padding = "4px 8px";
+      item.style.cursor = "pointer";
+      item.style.borderBottom = "1px solid #ddd";
+      item.style.fontWeight = "bold";
+      item.addEventListener("mouseenter", () => {
+        item.style.background = "#eef";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.background = "";
+      });
+      item.addEventListener("click", () => {
+        const value = (this.#inputEl?.value ?? this.text).trim();
+        if (!value) return;
+        const presets = this.presets;
+        if (!presets.includes(value)) {
+          presets.push(value);
+          this.presets = presets;
+        }
+        refresh();
+      });
+      return item;
+    }
+
+    #createPresetMenuItem(value, index, refresh) {
+      const item = document.createElement("div");
+      item.style.display = "flex";
+      item.style.alignItems = "center";
+      item.style.gap = "6px";
+      item.style.padding = "4px 8px";
+      item.addEventListener("mouseenter", () => {
+        item.style.background = "#eef";
+      });
+      item.addEventListener("mouseleave", () => {
+        item.style.background = "";
+      });
+
+      const label = document.createElement("span");
+      label.textContent = expandEmojiShortcodes(value) || "(empty)";
+      label.style.flex = "1";
+      label.style.overflow = "hidden";
+      label.style.textOverflow = "ellipsis";
+      label.style.whiteSpace = "nowrap";
+      label.style.cursor = "pointer";
+      label.title = value;
+      label.addEventListener("click", () => {
+        this.#setMessage(value);
+      });
+      item.append(label);
+
+      const remove = document.createElement("span");
+      remove.textContent = "×";
+      remove.title = "Delete preset";
+      remove.style.cursor = "pointer";
+      remove.style.fontWeight = "bold";
+      remove.style.padding = "0 2px";
+      remove.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const presets = this.presets;
+        presets.splice(index, 1);
+        this.presets = presets;
+        refresh();
+      });
+      item.append(remove);
+
+      return item;
     }
 
     #createMessageInput() {
@@ -880,6 +1033,23 @@
         configKeys.textRect,
         JSON.stringify(normalized),
       );
+    }
+
+    get presets() {
+      let value;
+      try {
+        value = JSON.parse(window.localStorage.getItem(configKeys.presets));
+      } catch {
+        value = null;
+      }
+      if (!Array.isArray(value)) return [];
+      return value.filter((v) => typeof v === "string");
+    }
+    set presets(value) {
+      const list = Array.isArray(value)
+        ? value.filter((v) => typeof v === "string")
+        : [];
+      window.localStorage.setItem(configKeys.presets, JSON.stringify(list));
     }
   }
 
