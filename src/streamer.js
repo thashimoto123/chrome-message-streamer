@@ -120,6 +120,14 @@
     enabled: "com.creasty.message-streamer/enabled",
     messageMode: "com.creasty.message-streamer/message-mode",
     textRect: "com.creasty.message-streamer/text-rect",
+    overlayBackgroundScope:
+      "com.creasty.message-streamer/overlay-background-scope",
+  };
+
+  const OverlayBackgroundScope = {
+    Full: "full",
+    "Text Area": "text",
+    None: "none",
   };
 
   const defaultTextRect = { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
@@ -320,10 +328,23 @@
       }
 
       // Background
-      if (this.mode == MessageMode["Overlay"]) {
+      const isOverlay = this.mode == MessageMode["Overlay"];
+      const scope = this.overlayBackgroundScope;
+      if (isOverlay) {
         ctx.drawImage(video, 0, 0);
-        ctx.fillStyle = "rgba(0,0,0,0.5)";
-        ctx.fillRect(0, 0, videoWidth, videoHeight);
+        if (scope !== OverlayBackgroundScope["None"]) {
+          ctx.fillStyle = "rgba(0,0,0,0.5)";
+          if (scope === OverlayBackgroundScope["Text Area"]) {
+            const rect = this.textRect;
+            const rectX = Math.floor(videoWidth * rect.x);
+            const rectY = Math.floor(videoHeight * rect.y);
+            const rectW = Math.floor(videoWidth * rect.width);
+            const rectH = Math.floor(videoHeight * rect.height);
+            ctx.fillRect(rectX, rectY, rectW, rectH);
+          } else {
+            ctx.fillRect(0, 0, videoWidth, videoHeight);
+          }
+        }
       } else {
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, 0, videoWidth, videoHeight);
@@ -336,13 +357,26 @@
         this.text,
       );
       ctx.font = textLayout.font;
-      if (this.mode == MessageMode["Overlay"]) {
-        ctx.fillStyle = "#fff";
-      } else {
-        ctx.fillStyle = "#999";
+
+      const needsShadow =
+        isOverlay && scope === OverlayBackgroundScope["None"];
+      if (needsShadow) {
+        ctx.shadowColor = "rgba(0,0,0,0.95)";
+        ctx.shadowBlur = Math.max(4, Math.floor(videoHeight * 0.012));
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = Math.max(1, Math.floor(videoHeight * 0.002));
       }
+
+      ctx.fillStyle = isOverlay ? "#fff" : "#999";
       for (const line of textLayout.lines) {
         ctx.fillText(line.text, line.x, line.y);
+      }
+
+      if (needsShadow) {
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
       }
     }
 
@@ -443,6 +477,7 @@
       advancedPanel.style.flexDirection = "column";
       advancedPanel.style.gap = "4px";
       advancedPanel.append(this.#createRectEditor());
+      advancedPanel.append(this.#createOverlayScopeToggle());
 
       const toggleButton = document.createElement("button");
       toggleButton.type = "button";
@@ -459,6 +494,37 @@
       container.append(advancedPanel);
 
       return container;
+    }
+
+    #createOverlayScopeToggle() {
+      const label = document.createElement("label");
+      label.style.display = "flex";
+      label.style.alignItems = "center";
+      label.style.gap = "4px";
+      label.style.fontSize = "11px";
+      label.style.color = "#000";
+      label.style.background = "#fff";
+      label.style.padding = "2px 4px";
+
+      const text = document.createElement("span");
+      text.textContent = "Overlay background";
+
+      const select = document.createElement("select");
+      for (const [optionLabel, value] of Object.entries(
+        OverlayBackgroundScope,
+      )) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = optionLabel;
+        option.selected = this.overlayBackgroundScope === value;
+        select.append(option);
+      }
+      select.addEventListener("change", (e) => {
+        this.overlayBackgroundScope = e.currentTarget.value;
+      });
+
+      label.append(text, select);
+      return label;
     }
 
     #createRectEditor() {
@@ -591,6 +657,30 @@
     }
     set enabled(value) {
       window.localStorage.setItem(configKeys.enabled, String(Boolean(value)));
+    }
+
+    #overlayBackgroundScopeCache = null;
+    get overlayBackgroundScope() {
+      if (this.#overlayBackgroundScopeCache)
+        return this.#overlayBackgroundScopeCache;
+      let value = window.localStorage.getItem(
+        configKeys.overlayBackgroundScope,
+      );
+      if (!Object.values(OverlayBackgroundScope).includes(value)) {
+        value = OverlayBackgroundScope["Full"];
+      }
+      this.#overlayBackgroundScopeCache = value;
+      return value;
+    }
+    set overlayBackgroundScope(value) {
+      if (!Object.values(OverlayBackgroundScope).includes(value)) {
+        throw new Error(`Invalid overlay background scope: ${value}`);
+      }
+      this.#overlayBackgroundScopeCache = value;
+      window.localStorage.setItem(
+        configKeys.overlayBackgroundScope,
+        value,
+      );
     }
 
     #textRectCache = null;
