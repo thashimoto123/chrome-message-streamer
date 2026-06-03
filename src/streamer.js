@@ -123,8 +123,9 @@
 
   class MessageStreamer {
     text = "";
-    #disposers = [];
     #textLayoutEngine = new TextLayoutEngine();
+    #pipeline = null;
+    #pipelineKey = null;
 
     async getModifiedUserMedia(constraints) {
       if (!constraints?.video) {
@@ -138,17 +139,73 @@
       }
 
       try {
-        const deviceStream = await getUserMedia(constraints);
-        const video = await this.#createVideo(deviceStream);
-        const canvasStream = await this.#createCanvasStream(video);
+        const pipeline = await this.#ensurePipeline(constraints);
 
-        return new MediaStream([
-          ...canvasStream.getVideoTracks(),
-          ...deviceStream.getAudioTracks(),
-        ]);
+        // Return clones so that the consumer (Meet) stopping the returned
+        // tracks (e.g. camera off) does NOT stop the underlying pipeline.
+        // The canvas keeps drawing and the camera keeps capturing, so the
+        // next getUserMedia call can hand out fresh clones immediately.
+        const videoTracks = pipeline.canvasStream
+          .getVideoTracks()
+          .map((t) => t.clone());
+        const audioTracks = pipeline.deviceStream
+          .getAudioTracks()
+          .map((t) => t.clone());
+
+        return new MediaStream([...videoTracks, ...audioTracks]);
       } catch (e) {
         console.error(e);
         throw e;
+      }
+    }
+
+    async #ensurePipeline(constraints) {
+      const key = JSON.stringify(constraints);
+      if (this.#pipeline && this.#pipelineKey === key) {
+        return this.#pipeline;
+      }
+      // Constraints changed (or first call) — rebuild from scratch
+      this.#disposePipeline();
+
+      const deviceStream = await getUserMedia(constraints);
+      const video = await this.#createVideo(deviceStream);
+      const { canvasStream, stop: stopLoop } =
+        await this.#createCanvasStream(video);
+
+      this.#pipeline = { deviceStream, video, canvasStream, stopLoop };
+      this.#pipelineKey = key;
+      return this.#pipeline;
+    }
+
+    #disposePipeline() {
+      const pipeline = this.#pipeline;
+      if (!pipeline) return;
+      this.#pipeline = null;
+      this.#pipelineKey = null;
+      try {
+        pipeline.stopLoop();
+      } catch (err) {
+        console.error(err);
+      }
+      try {
+        pipeline.video.pause();
+        pipeline.video.srcObject = null;
+      } catch (err) {
+        console.error(err);
+      }
+      for (const track of pipeline.deviceStream.getTracks()) {
+        try {
+          track.stop();
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      for (const track of pipeline.canvasStream.getTracks()) {
+        try {
+          track.stop();
+        } catch (err) {
+          console.error(err);
+        }
       }
     }
 
@@ -176,8 +233,7 @@
     stop() {
       if (!this.#isStarted) return;
       this.#restoreUserMedia();
-      this.#disposers.forEach((d) => d());
-      this.#disposers = [];
+      this.#disposePipeline();
       this.#isStarted = false;
     }
 
@@ -217,9 +273,8 @@
           throw err;
         }
       }, 24);
-      this.#disposers.push(stop);
 
-      return canvasStream;
+      return { canvasStream, stop };
     }
 
     #updateCanvasCache = {};
