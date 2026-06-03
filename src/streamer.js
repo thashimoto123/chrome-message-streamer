@@ -119,7 +119,30 @@
   const configKeys = {
     enabled: "com.creasty.message-streamer/enabled",
     messageMode: "com.creasty.message-streamer/message-mode",
+    textRect: "com.creasty.message-streamer/text-rect",
   };
+
+  const defaultTextRect = { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function normalizeTextRect(value) {
+    if (!value || typeof value !== "object") return { ...defaultTextRect };
+    const keys = ["x", "y", "width", "height"];
+    for (const key of keys) {
+      if (typeof value[key] !== "number" || !isFinite(value[key])) {
+        return { ...defaultTextRect };
+      }
+    }
+    const minSize = 0.05;
+    const width = clamp(value.width, minSize, 1);
+    const height = clamp(value.height, minSize, 1);
+    const x = clamp(value.x, 0, 1 - width);
+    const y = clamp(value.y, 0, 1 - height);
+    return { x, y, width, height };
+  }
 
   class MessageStreamer {
     text = "";
@@ -326,20 +349,22 @@
     #calcTextLayoutCache = {};
     #calcTextLayout(width, height, text) {
       const cache = this.#calcTextLayoutCache;
+      const rect = this.textRect;
 
       if (
         cache.width == width &&
         cache.height == height &&
-        cache.text == text
+        cache.text == text &&
+        cache.rectX == rect.x &&
+        cache.rectY == rect.y &&
+        cache.rectWidth == rect.width &&
+        cache.rectHeight == rect.height
       ) {
         return cache.result;
       }
 
-      // Add paddings
-      const maxWidth = Math.floor(
-        Math.min(width * 0.8, (height * 0.9 * 4) / 3),
-      );
-      const maxHeight = Math.floor(height * 0.8);
+      const maxWidth = Math.max(1, Math.floor(width * rect.width));
+      const maxHeight = Math.max(1, Math.floor(height * rect.height));
 
       const compactText = text.replace(/\s+/g, " ").trim();
       const result = this.#textLayoutEngine.calcLayout(
@@ -350,8 +375,8 @@
       );
 
       // Adjust the position to the original frame
-      const offsetX = (width - maxWidth) / 2;
-      const offsetY = (height - maxHeight) / 2;
+      const offsetX = Math.floor(width * rect.x);
+      const offsetY = Math.floor(height * rect.y);
       for (const line of result.lines) {
         line.x += offsetX;
         line.y += offsetY;
@@ -360,6 +385,10 @@
       cache.width = width;
       cache.height = height;
       cache.text = text;
+      cache.rectX = rect.x;
+      cache.rectY = rect.y;
+      cache.rectWidth = rect.width;
+      cache.rectHeight = rect.height;
       cache.result = result;
       return result;
     }
@@ -371,6 +400,8 @@
       container.style.left = "0";
       container.style.zIndex = 10000;
       container.style.display = "flex";
+      container.style.alignItems = "flex-start";
+      container.style.gap = "4px";
 
       const input = document.createElement("input");
       input.placeholder = "Enter message";
@@ -407,7 +438,133 @@
       });
       container.append(checkbox);
 
+      const advancedPanel = document.createElement("div");
+      advancedPanel.style.display = "none";
+      advancedPanel.style.flexDirection = "column";
+      advancedPanel.style.gap = "4px";
+      advancedPanel.append(this.#createRectEditor());
+
+      const toggleButton = document.createElement("button");
+      toggleButton.type = "button";
+      toggleButton.textContent = "Advanced";
+      toggleButton.title = "Show advanced options";
+      toggleButton.style.cursor = "pointer";
+      toggleButton.addEventListener("click", () => {
+        const hidden = advancedPanel.style.display === "none";
+        advancedPanel.style.display = hidden ? "flex" : "none";
+        toggleButton.textContent = hidden ? "Close" : "Advanced";
+      });
+      container.append(toggleButton);
+
+      container.append(advancedPanel);
+
       return container;
+    }
+
+    #createRectEditor() {
+      // 16:9 preview frame
+      const frame = document.createElement("div");
+      frame.title = "Drag to move, drag the corner to resize";
+      frame.style.position = "relative";
+      frame.style.width = "160px";
+      frame.style.height = "90px";
+      frame.style.background = "rgba(0,0,0,0.6)";
+      frame.style.border = "1px solid #888";
+      frame.style.boxSizing = "border-box";
+      frame.style.flex = "0 0 auto";
+      frame.style.userSelect = "none";
+
+      const box = document.createElement("div");
+      box.style.position = "absolute";
+      box.style.background = "rgba(255,255,255,0.35)";
+      box.style.border = "1px solid #fff";
+      box.style.boxSizing = "border-box";
+      box.style.cursor = "move";
+      frame.append(box);
+
+      const handle = document.createElement("div");
+      handle.style.position = "absolute";
+      handle.style.right = "-5px";
+      handle.style.bottom = "-5px";
+      handle.style.width = "10px";
+      handle.style.height = "10px";
+      handle.style.background = "#fff";
+      handle.style.border = "1px solid #333";
+      handle.style.cursor = "nwse-resize";
+      box.append(handle);
+
+      const applyRectToBox = () => {
+        const rect = this.textRect;
+        box.style.left = `${rect.x * 100}%`;
+        box.style.top = `${rect.y * 100}%`;
+        box.style.width = `${rect.width * 100}%`;
+        box.style.height = `${rect.height * 100}%`;
+      };
+      applyRectToBox();
+
+      const startDrag = (e, mode) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const frameRect = frame.getBoundingClientRect();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const startRect = { ...this.textRect };
+
+        const onMove = (ev) => {
+          const dxRatio = (ev.clientX - startX) / frameRect.width;
+          const dyRatio = (ev.clientY - startY) / frameRect.height;
+          let next;
+          if (mode === "move") {
+            next = {
+              x: startRect.x + dxRatio,
+              y: startRect.y + dyRatio,
+              width: startRect.width,
+              height: startRect.height,
+            };
+          } else {
+            next = {
+              x: startRect.x,
+              y: startRect.y,
+              width: startRect.width + dxRatio,
+              height: startRect.height + dyRatio,
+            };
+          }
+          this.textRect = next;
+          applyRectToBox();
+        };
+        const onUp = () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      };
+
+      box.addEventListener("mousedown", (e) => startDrag(e, "move"));
+      handle.addEventListener("mousedown", (e) => startDrag(e, "resize"));
+
+      const resetButton = document.createElement("button");
+      resetButton.type = "button";
+      resetButton.textContent = "Reset";
+      resetButton.title = "Reset to default size and position";
+      resetButton.style.position = "absolute";
+      resetButton.style.top = "2px";
+      resetButton.style.right = "2px";
+      resetButton.style.fontSize = "10px";
+      resetButton.style.padding = "1px 4px";
+      resetButton.style.cursor = "pointer";
+      resetButton.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+      });
+      resetButton.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.textRect = { ...defaultTextRect };
+        applyRectToBox();
+      });
+      frame.append(resetButton);
+
+      return frame;
     }
 
     #modeCache = null;
@@ -434,6 +591,29 @@
     }
     set enabled(value) {
       window.localStorage.setItem(configKeys.enabled, String(Boolean(value)));
+    }
+
+    #textRectCache = null;
+    get textRect() {
+      if (this.#textRectCache) return this.#textRectCache;
+      let value;
+      try {
+        value = JSON.parse(
+          window.localStorage.getItem(configKeys.textRect),
+        );
+      } catch {
+        value = null;
+      }
+      this.#textRectCache = normalizeTextRect(value);
+      return this.#textRectCache;
+    }
+    set textRect(value) {
+      const normalized = normalizeTextRect(value);
+      this.#textRectCache = normalized;
+      window.localStorage.setItem(
+        configKeys.textRect,
+        JSON.stringify(normalized),
+      );
     }
   }
 
