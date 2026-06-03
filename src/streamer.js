@@ -136,6 +136,35 @@
     return Math.min(Math.max(value, min), max);
   }
 
+  const EMOJI_DATA = window.__EMOJI_DATA || {};
+  const EMOJI_KEYS = Object.keys(EMOJI_DATA).sort();
+  const EMOJI_SHORTCODE_CHAR = /[a-zA-Z0-9_+-]/;
+
+  function expandEmojiShortcodes(text) {
+    return text.replace(/:([a-zA-Z0-9_+-]+):/g, (match, name) =>
+      Object.prototype.hasOwnProperty.call(EMOJI_DATA, name)
+        ? EMOJI_DATA[name]
+        : match,
+    );
+  }
+
+  function findEmojiQueryAtCursor(value, cursorPos) {
+    let i = cursorPos - 1;
+    while (i >= 0) {
+      const ch = value[i];
+      if (ch === ":") {
+        const query = value.slice(i + 1, cursorPos);
+        if (/^[a-zA-Z0-9_+-]*$/.test(query)) {
+          return { start: i, end: cursorPos, query };
+        }
+        return null;
+      }
+      if (!EMOJI_SHORTCODE_CHAR.test(ch)) return null;
+      i--;
+    }
+    return null;
+  }
+
   function normalizeTextRect(value) {
     if (!value || typeof value !== "object") return { ...defaultTextRect };
     const keys = ["x", "y", "width", "height"];
@@ -157,6 +186,7 @@
     #textLayoutEngine = new TextLayoutEngine();
     #pipeline = null;
     #pipelineKey = null;
+    #inputEl = null;
 
     async getModifiedUserMedia(constraints) {
       if (!constraints?.video) {
@@ -400,7 +430,9 @@
       const maxWidth = Math.max(1, Math.floor(width * rect.width));
       const maxHeight = Math.max(1, Math.floor(height * rect.height));
 
-      const compactText = text.replace(/\s+/g, " ").trim();
+      const compactText = expandEmojiShortcodes(text)
+        .replace(/\s+/g, " ")
+        .trim();
       const result = this.#textLayoutEngine.calcLayout(
         compactText,
         maxWidth,
@@ -437,15 +469,7 @@
       container.style.alignItems = "flex-start";
       container.style.gap = "4px";
 
-      const input = document.createElement("input");
-      input.placeholder = "Enter message";
-      input.addEventListener("input", (e) => {
-        this.text = e.currentTarget.value;
-      });
-      input.addEventListener("focus", (e) => {
-        e.currentTarget.select();
-      });
-      container.append(input);
+      container.append(this.#createMessageInput());
 
       const select = document.createElement("select");
       select.addEventListener("change", (e) => {
@@ -494,6 +518,158 @@
       container.append(advancedPanel);
 
       return container;
+    }
+
+    #createMessageInput() {
+      const wrapper = document.createElement("div");
+      wrapper.style.position = "relative";
+      wrapper.style.flex = "0 0 auto";
+
+      const input = document.createElement("input");
+      input.placeholder = "Enter message";
+      this.#inputEl = input;
+      wrapper.append(input);
+
+      const dropdown = document.createElement("div");
+      dropdown.style.position = "absolute";
+      dropdown.style.top = "100%";
+      dropdown.style.left = "0";
+      dropdown.style.minWidth = "200px";
+      dropdown.style.maxHeight = "240px";
+      dropdown.style.overflowY = "auto";
+      dropdown.style.background = "#fff";
+      dropdown.style.color = "#000";
+      dropdown.style.border = "1px solid #888";
+      dropdown.style.fontSize = "12px";
+      dropdown.style.zIndex = "10001";
+      dropdown.style.display = "none";
+      wrapper.append(dropdown);
+
+      const state = {
+        suggestions: [],
+        selectedIndex: 0,
+        context: null,
+      };
+      const MAX_SUGGESTIONS = 8;
+
+      const renderDropdown = () => {
+        dropdown.replaceChildren();
+        for (let i = 0; i < state.suggestions.length; i++) {
+          const name = state.suggestions[i];
+          const item = document.createElement("div");
+          item.style.display = "flex";
+          item.style.gap = "6px";
+          item.style.alignItems = "center";
+          item.style.padding = "2px 6px";
+          item.style.cursor = "pointer";
+          if (i === state.selectedIndex) {
+            item.style.background = "#cde";
+          }
+          const glyph = document.createElement("span");
+          glyph.textContent = EMOJI_DATA[name];
+          const label = document.createElement("span");
+          label.textContent = `:${name}:`;
+          item.append(glyph, label);
+          item.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            state.selectedIndex = i;
+            confirmSelection();
+          });
+          item.addEventListener("mouseenter", () => {
+            state.selectedIndex = i;
+            renderDropdown();
+          });
+          dropdown.append(item);
+        }
+        dropdown.style.display = state.suggestions.length ? "block" : "none";
+      };
+
+      const hideDropdown = () => {
+        state.suggestions = [];
+        state.context = null;
+        dropdown.style.display = "none";
+      };
+
+      const updateSuggestions = () => {
+        const ctx = findEmojiQueryAtCursor(input.value, input.selectionStart);
+        if (!ctx || ctx.query.length === 0) {
+          hideDropdown();
+          return;
+        }
+        const q = ctx.query.toLowerCase();
+        const startsWith = [];
+        const contains = [];
+        for (const k of EMOJI_KEYS) {
+          if (k.startsWith(q)) startsWith.push(k);
+          else if (k.includes(q)) contains.push(k);
+          if (startsWith.length >= MAX_SUGGESTIONS) break;
+        }
+        const top = startsWith
+          .concat(contains)
+          .slice(0, MAX_SUGGESTIONS);
+        if (top.length === 0) {
+          hideDropdown();
+          return;
+        }
+        state.suggestions = top;
+        state.selectedIndex = 0;
+        state.context = ctx;
+        renderDropdown();
+      };
+
+      const confirmSelection = () => {
+        if (!state.context || !state.suggestions.length) return;
+        const name = state.suggestions[state.selectedIndex];
+        const replacement = `:${name}:`;
+        const before = input.value.slice(0, state.context.start);
+        const after = input.value.slice(state.context.end);
+        input.value = before + replacement + after;
+        const pos = before.length + replacement.length;
+        input.setSelectionRange(pos, pos);
+        this.text = input.value;
+        hideDropdown();
+      };
+
+      input.addEventListener("input", (e) => {
+        this.text = e.currentTarget.value;
+        updateSuggestions();
+      });
+      input.addEventListener("keydown", (e) => {
+        if (dropdown.style.display === "none") return;
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          state.selectedIndex =
+            (state.selectedIndex + 1) % state.suggestions.length;
+          renderDropdown();
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          state.selectedIndex =
+            (state.selectedIndex - 1 + state.suggestions.length) %
+            state.suggestions.length;
+          renderDropdown();
+        } else if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          confirmSelection();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          hideDropdown();
+        }
+      });
+      input.addEventListener("focus", (e) => {
+        e.currentTarget.select();
+      });
+      input.addEventListener("blur", () => {
+        // Delay so item mousedown can fire before the dropdown disappears.
+        setTimeout(hideDropdown, 150);
+      });
+      input.addEventListener("click", updateSuggestions);
+      input.addEventListener("keyup", (e) => {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          updateSuggestions();
+        }
+      });
+
+      return wrapper;
     }
 
     #createOverlayScopeToggle() {
