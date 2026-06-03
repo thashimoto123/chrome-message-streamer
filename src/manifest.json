@@ -19,7 +19,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["streamer.js"],
+      "resources": ["streamer.js", "emoji-data.js"],
       "matches": ["<all_urls>"]
     }
   ],
