@@ -211,18 +211,21 @@
       try {
         const pipeline = await this.#ensurePipeline(constraints);
 
-        // Return clones so that the consumer (Meet) stopping the returned
-        // tracks (e.g. camera off) does NOT stop the underlying pipeline.
-        // The canvas keeps drawing and the camera keeps capturing, so the
-        // next getUserMedia call can hand out fresh clones immediately.
-        const videoTracks = pipeline.canvasStream
-          .getVideoTracks()
-          .map((t) => t.clone());
-        const audioTracks = pipeline.deviceStream
-          .getAudioTracks()
-          .map((t) => t.clone());
+        // Mint a fresh, independent captureStream from the shared canvas for
+        // each request. When the consumer (Meet) stops these tracks on camera
+        // off, the canvas and other captureStreams are unaffected, so camera
+        // on simply mints another live stream. (track.clone() of a canvas
+        // capture track proved unreliable — clones could stop receiving
+        // frames, leaving a black image on re-enable.)
+        const out = pipeline.canvas.captureStream();
+        if (!out) {
+          throw new Error("Failed to capture stream from canvas");
+        }
+        for (const track of pipeline.deviceStream.getAudioTracks()) {
+          out.addTrack(track.clone());
+        }
 
-        return new MediaStream([...videoTracks, ...audioTracks]);
+        return out;
       } catch (e) {
         console.error(e);
         throw e;
@@ -239,10 +242,9 @@
 
       const deviceStream = await getUserMedia(constraints);
       const video = await this.#createVideo(deviceStream);
-      const { canvasStream, stop: stopLoop } =
-        await this.#createCanvasStream(video);
+      const { canvas, stop: stopLoop } = this.#createCanvas(video);
 
-      this.#pipeline = { deviceStream, video, canvasStream, stopLoop };
+      this.#pipeline = { deviceStream, video, canvas, stopLoop };
       this.#pipelineKey = key;
       return this.#pipeline;
     }
@@ -264,13 +266,6 @@
         console.error(err);
       }
       for (const track of pipeline.deviceStream.getTracks()) {
-        try {
-          track.stop();
-        } catch (err) {
-          console.error(err);
-        }
-      }
-      for (const track of pipeline.canvasStream.getTracks()) {
         try {
           track.stop();
         } catch (err) {
@@ -321,7 +316,7 @@
       return video;
     }
 
-    async #createCanvasStream(video) {
+    #createCanvas(video) {
       const canvas = document.createElement("canvas");
 
       const canvasCtx = canvas.getContext("2d");
@@ -329,22 +324,22 @@
         throw new Error("Failed to get canvas context");
       }
 
-      const canvasStream = canvas.captureStream();
-      if (!canvasStream) {
-        throw new Error("Failed to capture stream from canvas");
-      }
+      // Size the canvas and paint one frame BEFORE any captureStream() is
+      // minted from it. A canvas defaults to 300x150; capturing at that size
+      // and drawing a full-res video onto it crops to the top-left corner,
+      // which the consumer then scales up (the "zoomed in" symptom).
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+      this.#updateCanvas(canvas, canvasCtx, video);
 
+      // Keep drawing while the pipeline is alive. Consumers get independent
+      // captureStream()s minted from this canvas, so the loop must not depend
+      // on any single consumer being active.
       const stop = runLoop(() => {
-        if (!canvasStream.active) return;
-        try {
-          this.#updateCanvas(canvas, canvasCtx, video);
-        } catch (err) {
-          console.error(err);
-          throw err;
-        }
+        this.#updateCanvas(canvas, canvasCtx, video);
       }, 24);
 
-      return { canvasStream, stop };
+      return { canvas, stop };
     }
 
     #updateCanvasCache = {};
@@ -362,7 +357,7 @@
 
       // Fallback
       if (!this.text) {
-        ctx.drawImage(video, 0, 0);
+        ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
         return;
       }
 
@@ -370,7 +365,7 @@
       const isOverlay = this.mode == MessageMode["Overlay"];
       const scope = this.overlayBackgroundScope;
       if (isOverlay) {
-        ctx.drawImage(video, 0, 0);
+        ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
         if (scope !== OverlayBackgroundScope["None"]) {
           ctx.fillStyle = "rgba(0,0,0,0.5)";
           if (scope === OverlayBackgroundScope["Text Area"]) {
